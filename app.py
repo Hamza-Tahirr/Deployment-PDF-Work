@@ -8,7 +8,6 @@ import io
 
 app = Flask(__name__)
 
-# Set max upload size to 100 MB
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100 MB
 
 UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
@@ -19,7 +18,6 @@ def save_image(image_data, image_name):
     image = Image.open(io.BytesIO(image_data))
     if image.mode not in ("RGB", "RGBA", "L"):
         image = image.convert("RGB")
-    # Resize image to 100x100 pixels
     image = image.resize((100, 100))
     image_path = os.path.join(UPLOAD_FOLDER, f'{image_name}.png')
     image.save(image_path)
@@ -32,7 +30,7 @@ def redact_names_and_individuals(page, name_pattern, word_to_remove):
     for match in name_pattern.finditer(text):
         first_name = match.group(2)
         last_name = match.group(1)
-        new_name = f"{first_name} {last_name}"  # Rearrange name
+        new_name = f"{first_name} {last_name}"
         names_on_page.append(new_name)
         for inst in page.search_for(match.group()):
             page.add_redact_annot(inst, fill=(1, 1, 1))
@@ -43,7 +41,7 @@ def redact_names_and_individuals(page, name_pattern, word_to_remove):
         page.add_redact_annot(inst, fill=(1, 1, 1))
         page.apply_redactions()
         page.insert_text(inst[:2], " ", fontsize=11, fontname="helv")
-    
+
     return names_on_page
 
 def extract_images_from_page(doc, page, image_names):
@@ -55,14 +53,14 @@ def extract_images_from_page(doc, page, image_names):
         img_bbox = fitz.Rect(page.get_image_bbox(img))
         base_image = doc.extract_image(xref)
         image_data = base_image["image"]
-        
+
         if image_index < len(image_names):
             image_name = image_names[image_index]
         else:
             image_name = f"Unnamed_{image_index + 1}"
-        
+
         image_path = save_image(image_data, image_name)
-        
+
         images_on_pages.append({
             'x0': img_bbox.x0,
             'y0': img_bbox.y0,
@@ -71,9 +69,9 @@ def extract_images_from_page(doc, page, image_names):
             'image_path': image_path,
             'image_name': image_name
         })
-        
+
         image_index += 1
-        
+
     return images_on_pages
 
 def extract_text_below_images(page):
@@ -81,11 +79,11 @@ def extract_text_below_images(page):
     text_below_images = []
     text = page.get_text('text')
     lines = text.split('\n')
-    
+
     for line in lines:
-        if line.strip():  # Only process non-empty lines
+        if line.strip():
             text_below_images.append(line.strip())
-    
+
     return text_below_images
 
 def process_pdf(input_pdf_path, output_pdf_path):
@@ -93,39 +91,36 @@ def process_pdf(input_pdf_path, output_pdf_path):
     doc = fitz.open(input_pdf_path)
     name_pattern = re.compile(r'(\b[A-Z][a-zA-Z]+), ([A-Z][a-zA-Z]+(?: [A-Z][a-zA-Z]+)*)')
     word_to_remove = "Individual"
-    
+
     images_on_pages = []
 
     for page_num, page in enumerate(doc):
         names_on_page = redact_names_and_individuals(page, name_pattern, word_to_remove)
         page_images = extract_images_from_page(doc, page, names_on_page)
 
-        # Extract text below images and pair it with corresponding images
         texts_below_images = extract_text_below_images(page)
-        
+
         for i in range(len(page_images)):
             if i < len(texts_below_images):
-                page_images[i]['text_below'] = texts_below_images[i]  # Pairing text with images
-            
-            # Adding checkbox above each image
+                page_images[i]['text_below'] = texts_below_images[i]
+
+            # Checkbox above each photo, ticked by default
             checkbox_rect = fitz.Rect(page_images[i]['x0'], page_images[i]['y0'] - 20,
                                        page_images[i]['x0'] + 15, page_images[i]['y0'])
-            
-            # Create a checkbox widget and set it as checked ("Yes")
+
             checkbox_widget = fitz.Widget()
             checkbox_widget.rect = checkbox_rect
             checkbox_widget.field_type = fitz.PDF_WIDGET_TYPE_CHECKBOX
             checkbox_widget.field_name = f"checkbox_{page_num}_{i}"
-            checkbox_widget.field_value = "Yes"  # Default state of checkbox is "Yes" (checked)
-            
-            # Add widget to the current page using add_widget method
+            checkbox_widget.field_value = "Yes"
+
             page.add_widget(checkbox_widget)
 
         images_on_pages.extend([{'page': page_num, **img} for img in page_images])
 
     doc.save(output_pdf_path)
     doc.close()
-    
+
     return images_on_pages
 
 
@@ -136,7 +131,7 @@ def index():
 @app.route('/upload', methods=['POST'])
 def upload_file():
     file = request.files.get('file')
-    
+
     if not file or not file.filename:
         return "No selected file", 400
 
@@ -172,7 +167,7 @@ def remove():
 @app.route('/remove_upload', methods=['POST'])
 def remove_upload():
     file = request.files.get('file')
-    
+
     if not file or not file.filename:
         return "No selected file", 400
 
@@ -180,15 +175,14 @@ def remove_upload():
     input_pdf_path = os.path.join(UPLOAD_FOLDER, filename)
 
     file.save(input_pdf_path)
-    
+
     doc = fitz.open(input_pdf_path)
-    
-    # Determine the number of pages in the PDF
+
     total_pages = len(doc)
-    
+
     for page_num in range(total_pages):
         page = doc[page_num]
-        
+
         for widget in page.widgets():
             if widget.field_type == fitz.PDF_WIDGET_TYPE_CHECKBOX and widget.field_value == "Yes":
                 checkbox_rect = widget.rect
@@ -206,34 +200,33 @@ def remove_upload():
 
                         text_below_rect = fitz.Rect(img_bbox.x0, img_bbox.y1, img_bbox.x1, img_bbox.y1 + 30)
                         text_instances = page.get_text("text", clip=text_below_rect)
-                        
-                        if text_instances.strip():  
+
+                        if text_instances.strip():
                             text_below_img_rects_to_remove.append(text_below_rect)
 
                 for img_rect in img_rects_to_remove:
-                    page.add_redact_annot(img_rect, fill=(1, 1, 1)) 
+                    page.add_redact_annot(img_rect, fill=(1, 1, 1))
 
                 for text_rect in text_below_img_rects_to_remove:
-                    page.add_redact_annot(text_rect, fill=(1, 1, 1)) 
-                
-                # Check the number of pages and apply different whiteout sizes accordingly
+                    page.add_redact_annot(text_rect, fill=(1, 1, 1))
+
+                # The whiteout size depends on the page count
                 if total_pages <= 4:
                     whiteout_rect = fitz.Rect(checkbox_rect.x0, checkbox_rect.y1, checkbox_rect.x0 + 100, checkbox_rect.y1 + 70)
                 else:
                     whiteout_rect = fitz.Rect(checkbox_rect.x0, checkbox_rect.y1, checkbox_rect.x0 + 120, checkbox_rect.y1 + 120)
-                
-                page.add_redact_annot(whiteout_rect, fill=(1, 1, 1))  # Apply white rectangle
+
+                page.add_redact_annot(whiteout_rect, fill=(1, 1, 1))
 
         page.apply_redactions()
 
     final_output_pdf_path = os.path.join(UPLOAD_FOLDER, f'final_{filename}')
-    doc.save(final_output_pdf_path)  
+    doc.save(final_output_pdf_path)
     doc.close()
-    
-    # Check if the file is saved correctly
+
     if not os.path.exists(final_output_pdf_path):
         return "Error processing PDF", 500
-    
+
     return render_template('final.html', pdf_url=url_for('serve_pdf', filename=f'final_{filename}'))
 
 @app.route('/final/<filename>')
