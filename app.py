@@ -1,4 +1,5 @@
-from flask import Flask, request, send_file, render_template, url_for, send_from_directory
+from flask import Flask, request, render_template, url_for, send_from_directory
+from werkzeug.utils import secure_filename
 import fitz  # PyMuPDF
 import os
 import re
@@ -10,18 +11,14 @@ app = Flask(__name__)
 # Set max upload size to 100 MB
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100 MB
 
-UPLOAD_FOLDER = 'uploads'
+UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-def is_circle(bbox):
-    """Check if the bounding box is circular and larger than 30px."""
-    width = bbox.x1 - bbox.x0
-    height = bbox.y1 - bbox.y0
-    return width > 30 and height > 30 and abs(width - height) < 5
 
 def save_image(image_data, image_name):
     """Save image bytes to the uploads directory with the name from the PDF."""
     image = Image.open(io.BytesIO(image_data))
+    if image.mode not in ("RGB", "RGBA", "L"):
+        image = image.convert("RGB")
     # Resize image to 100x100 pixels
     image = image.resize((100, 100))
     image_path = os.path.join(UPLOAD_FOLDER, f'{image_name}.png')
@@ -92,7 +89,7 @@ def extract_text_below_images(page):
     return text_below_images
 
 def process_pdf(input_pdf_path, output_pdf_path):
-    """Replace names and extract circular images from PDF."""
+    """Reformat names, extract photos and add a checkbox above each photo."""
     doc = fitz.open(input_pdf_path)
     name_pattern = re.compile(r'(\b[A-Z][a-zA-Z]+), ([A-Z][a-zA-Z]+(?: [A-Z][a-zA-Z]+)*)')
     word_to_remove = "Individual"
@@ -143,17 +140,18 @@ def upload_file():
     if not file or not file.filename:
         return "No selected file", 400
 
-    input_pdf_path = os.path.join(UPLOAD_FOLDER, file.filename)
-    output_pdf_path = os.path.join(UPLOAD_FOLDER, f'modified_{file.filename}')
-    
+    filename = secure_filename(file.filename) or 'upload.pdf'
+    input_pdf_path = os.path.join(UPLOAD_FOLDER, filename)
+    output_pdf_path = os.path.join(UPLOAD_FOLDER, f'modified_{filename}')
+
     file.save(input_pdf_path)
 
     images_on_pages = process_pdf(input_pdf_path, output_pdf_path)
 
-    return render_template('display.html', 
-                           pdf_url=url_for('serve_pdf', filename=f'modified_{file.filename}'),
+    return render_template('display.html',
+                           pdf_url=url_for('serve_pdf', filename=f'modified_{filename}'),
                            images=images_on_pages,
-                           filename=f'modified_{file.filename}')
+                           filename=f'modified_{filename}')
 
 @app.route('/uploads/<filename>')
 def serve_pdf(filename):
@@ -161,7 +159,7 @@ def serve_pdf(filename):
 
 @app.route('/download/<filename>')
 def download_file(filename):
-    return send_file(os.path.join(UPLOAD_FOLDER, filename), as_attachment=True)
+    return send_from_directory(UPLOAD_FOLDER, filename, as_attachment=True)
 
 @app.route('/image/<image_name>')
 def serve_image(image_name):
@@ -177,9 +175,10 @@ def remove_upload():
     
     if not file or not file.filename:
         return "No selected file", 400
-    
-    input_pdf_path = os.path.join(UPLOAD_FOLDER, file.filename)
-    
+
+    filename = secure_filename(file.filename) or 'upload.pdf'
+    input_pdf_path = os.path.join(UPLOAD_FOLDER, filename)
+
     file.save(input_pdf_path)
     
     doc = fitz.open(input_pdf_path)
@@ -193,15 +192,16 @@ def remove_upload():
         for widget in page.widgets():
             if widget.field_type == fitz.PDF_WIDGET_TYPE_CHECKBOX and widget.field_value == "Yes":
                 checkbox_rect = widget.rect
-                
+                # The checkbox only touches the photo's top edge, so grow it a little
+                match_rect = checkbox_rect + (-1, -1, 1, 1)
+
                 img_rects_to_remove = []
                 text_below_img_rects_to_remove = []
 
                 for img in page.get_images(full=True):
-                    xref = img[0]
                     img_bbox = fitz.Rect(page.get_image_bbox(img))
-                    
-                    if img_bbox.intersects(checkbox_rect):
+
+                    if img_bbox.intersects(match_rect):
                         img_rects_to_remove.append(img_bbox)
 
                         text_below_rect = fitz.Rect(img_bbox.x0, img_bbox.y1, img_bbox.x1, img_bbox.y1 + 30)
@@ -226,7 +226,7 @@ def remove_upload():
 
         page.apply_redactions()
 
-    final_output_pdf_path = os.path.join(UPLOAD_FOLDER, f'final_{file.filename}')
+    final_output_pdf_path = os.path.join(UPLOAD_FOLDER, f'final_{filename}')
     doc.save(final_output_pdf_path)  
     doc.close()
     
@@ -234,12 +234,13 @@ def remove_upload():
     if not os.path.exists(final_output_pdf_path):
         return "Error processing PDF", 500
     
-    return render_template('final.html', pdf_url=url_for('serve_pdf', filename=f'final_{file.filename}'))
+    return render_template('final.html', pdf_url=url_for('serve_pdf', filename=f'final_{filename}'))
 
 @app.route('/final/<filename>')
 def final(filename):
-   return send_file(os.path.join(UPLOAD_FOLDER, filename), as_attachment=True)
+    return send_from_directory(UPLOAD_FOLDER, filename, as_attachment=True)
 
 if __name__ == '__main__':
-        port = int(os.environ.get('PORT', 5000))
-        app.run(debug=True, host='0.0.0.0', port=port)
+    port = int(os.environ.get('PORT', 5000))
+    debug = os.environ.get('FLASK_DEBUG') == '1'
+    app.run(debug=debug, host='0.0.0.0', port=port)
